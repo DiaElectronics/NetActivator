@@ -1,0 +1,17 @@
+# depslib dependency file v1.0
+1519205637 source:/home/pi/projects/netactivator/net-activator/main.c
+	<arpa/inet.h>
+	<dirent.h>
+	<errno.h>
+	<event.h>
+	<fcntl.h>
+	<linux/serial.h>
+	<netinet/in.h>
+	<netdb.h>
+	<stdio.h>
+	<stdlib.h>
+	<string.h>
+	<sys/socket.h>
+	<sys/uio.h>
+	<unistd.h>
+
