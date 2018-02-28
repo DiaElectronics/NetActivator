@@ -15,3 +15,44 @@
 	<sys/uio.h>
 	<unistd.h>
 
+1519808868 source:/home/rcsiberia/Projects/NetActivator/diaqueue.c
+	"diaequeue.h"
+	<stdlib.h>
+	<pthread.h>
+	<stdio.h>
+
+1519806350 /home/rcsiberia/Projects/NetActivator/diaequeue.h
+	<pthread.h>
+
+1519816512 source:/home/rcsiberia/Projects/NetActivator/main.c
+	<arpa/inet.h>
+	<dirent.h>
+	<errno.h>
+	<event.h>
+	<fcntl.h>
+	<linux/serial.h>
+	<netinet/in.h>
+	<netdb.h>
+	<stdio.h>
+	<stdlib.h>
+	<string.h>
+	<sys/socket.h>
+	<sys/uio.h>
+	<unistd.h>
+	<pthread.h>
+	<termios.h>
+	"diaequeue.h"
+	"diaedevice.h"
+
+1519809047 source:/home/rcsiberia/Projects/NetActivator/diadevice.c
+	"diaedevice.h"
+	<stdio.h>
+	<stdlib.h>
+	<termios.h>
+	<unistd.h>
+	<fcntl.h>
+	<string.h>
+
+1519725176 /home/rcsiberia/Projects/NetActivator/diaedevice.h
+	<stddef.h>
+

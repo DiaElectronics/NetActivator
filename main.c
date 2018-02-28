@@ -12,17 +12,36 @@
 #include <sys/socket.h>
 #include <sys/uio.h>
 #include <unistd.h>
+#include <pthread.h>
+#include <termios.h>
+
+#include "diaequeue.h"
+#include "diaedevice.h"
+
 
 #define UDP_PORT 6001
 #define MAX_CMD 512
+#define MAX_CHANNELS_SUPPORTED 12
 
 int udpsocket_descriptor = 0;
 int g_count = 0;
 struct timeval stTv;
 
+diaedevice * devices[MAX_CHANNELS_SUPPORTED];
+char device_checked [MAX_CHANNELS_SUPPORTED];
+
+pthread_t physical_ports_thread;
+pthread_t check_pendingdevice_queue_thread;
+pthread_t process_command_queue_loop_thread;
+
+diae_queue *pending_devices;
+diae_queue *pending_commands;
+
 typedef struct activator_cmd
 {
     int channel;
+    unsigned int addr_len;
+    struct sockaddr pack_from_addr;
     char data[MAX_CMD];
 } activator_cmd;
 
@@ -33,20 +52,31 @@ int parse_cmd(activator_cmd * cmd, char * buf, size_t buf_len)
     int cmd_bytes_written = 0;
     for(int i=0;i<buf_len;i++)
     {
-        if(buf[i]>='0' && buf[i]<='9')
+        if(buf[i]>='1' && buf[i]<='9')
         {
             cmd->channel*=10;
             cmd->channel+=buf[i];
-            cmd->channel-=48;
+            cmd->channel-='1';//'1' is the first possible channel
         }
         else if(buf[i]==':')
         {
-            for(int j=i+1;(j<buf_len)&&(cmd_bytes_written<(MAX_CMD-1));j++)
+            for(int j=i+1;(j<(buf_len-1))&&(cmd_bytes_written<(MAX_CMD-1));j++)
             {
                 cmd->data[cmd_bytes_written] = buf[j];
+                if(buf[j]==';')
+                {
+                    cmd->data[cmd_bytes_written+1]=0;
+                    return 0;
+                }
+                if(buf[j]==0)
+                {
+                     printf("zero terminated command (instead of ;)\n");
+                    return 1;
+                }
                 cmd_bytes_written++;
             }
-            return 0;
+            printf("not terminated command\n");
+            return 1;
         }
         else
         {
@@ -71,13 +101,91 @@ int check_socket(int socket_fd)
 //TIMER_FUNCTION
 void timer_function(int x, short int y, void *pargs)
 {
-    printf("\n\n%d,%d,**********Count is %d\n\n",x,y,g_count);
+    //printf("\n%d,%d,**********Count is %d\n",x,y,g_count);
+    printf("-------\n");
+    for(int i=0;i<MAX_CHANNELS_SUPPORTED;i++)
+    {
+        if(devices[i]!=NULL)
+        {
+            printf("%s is on %d channel, \n", devices[i]->port_name, i+1);
+            write_to_port(devices[i], "$", 1);
+
+            int N = read_port_byte(devices[i]);
+            if(N>0)
+            {
+                devices[i]->attempts = 5;
+                printf("recieved:%s\n",devices[i]->buf);
+            }
+            else
+            {
+                devices[i]->attempts--;
+                if(devices[i]->attempts<=0)
+                {
+                    diaedevice * dev_to_del = devices[i];
+                    devices[i]=NULL;
+                    printf("dev %s on channel %d is not responding and will be destroyed\n", dev_to_del->port_name, i+1);
+                    close_device(devices[i]);
+                }
+            }
+        }
+    }
+    printf("\n");
     g_count = 0 ;
     event_add((struct event*)pargs,&stTv);
 }
 
+
+int process_command_queue()
+{
+    if(is_diae_queue_empty(pending_commands))
+    {
+        //printf("cmd queue empty\n");
+        return 1;
+    }
+    activator_cmd * curCmd = (activator_cmd *)dequeue(pending_commands);
+    if(curCmd == NULL)
+    {
+        printf("empty command in line \n ");
+        return 0;
+    }
+    printf("sending_cmd_to_box to %d, total bytes:%zu\n",curCmd->channel,strlen(curCmd->data));
+    const char * buf = "-";
+
+    if(devices[curCmd->channel]!=NULL)
+    {
+        buf="+";
+        write_to_port(devices[curCmd->channel], curCmd->data, strlen(curCmd->data));
+    }
+    else
+    {
+        printf("device is not found :(\n");
+    }
+
+    int n = sendto(udpsocket_descriptor, buf, strlen(buf), 0, &curCmd->pack_from_addr, curCmd->addr_len);
+    if (n < 0)
+    {
+        printf("ERROR in sendto\n");
+    }
+    free(curCmd);
+    return 0;
+}
+
+void * process_command_queue_loop()
+{
+    while(1)
+    {
+        //printf("\\O/\n");
+        //printf( " |\n");
+        //printf( "/ \\\n");
+        int K = process_command_queue();
+        sleep(K);
+    }
+    return NULL;
+}
+
 void command_recieved_handler(int x, short int y, void *pargs)
 {
+    printf("---->\n");
     unsigned int unFromAddrLen;
     int nByte = 0;
     char aReqBuffer[MAX_CMD];
@@ -91,61 +199,253 @@ void command_recieved_handler(int x, short int y, void *pargs)
     }
     aReqBuffer[nByte] = 0;
 
-    activator_cmd curCmd;
-    parse_cmd(&curCmd, aReqBuffer, MAX_CMD);
-    printf("channel:%d; cmd:%s\n",curCmd.channel,curCmd.data);
+    activator_cmd * curCmd = (activator_cmd *)malloc(sizeof(activator_cmd));
+    printf("size_of act_cmd:%zu\n",sizeof(activator_cmd));
+    memset(curCmd, 0, sizeof(activator_cmd));
 
-    ///////////////////////
-    char ipstr[INET6_ADDRSTRLEN];
-    int port;
-
-    // deal with both IPv4 and IPv6:
-    if (pack_from_addr.sa_family == AF_INET)
+    int err = parse_cmd(curCmd, aReqBuffer, MAX_CMD);
+    if(!err)
     {
-        struct sockaddr_in *s = (struct sockaddr_in *)&pack_from_addr;
-        port = ntohs(s->sin_port);
-        inet_ntop(AF_INET, &s->sin_addr, ipstr, sizeof ipstr);
+        printf("channel:%d; cmd:%s\n",curCmd->channel,curCmd->data);
+        curCmd->addr_len = unFromAddrLen;
+        memcpy(&curCmd->pack_from_addr, &pack_from_addr, unFromAddrLen );
+
+        enqueue(pending_commands, curCmd);
     }
     else
-    { // AF_INET6
-        struct sockaddr_in6 *s = (struct sockaddr_in6 *)&pack_from_addr;
-        port = ntohs(s->sin6_port);
-        inet_ntop(AF_INET6, &s->sin6_addr, ipstr, sizeof ipstr);
-    }
-
-    char buf[512];
-    buf[0]='O';
-    buf[1]='K';
-    buf[2]=0;
-
-    int n = sendto(udpsocket_descriptor, buf, strlen(buf), 0, &pack_from_addr, unFromAddrLen);
-    if (n < 0)
     {
-        printf("ERROR in sendto");
+        printf("ERR: bad command not added to the queue\n");
+        char buf[3];
+        buf[0]='?';
+        buf[1]=0;
+        int n = sendto(udpsocket_descriptor, buf, strlen(buf), 0, &pack_from_addr, unFromAddrLen);
+        if (n < 0)
+        {
+            printf("ERROR in sendto\n");
+        }
     }
-
-    printf("Peer IP address: %s:%d\n", ipstr,port);
-
-    g_count++;
 }
 
-int main(int argc, char **argv)
+
+int process_pending_queue()
 {
-	DIR *dir;
+    //printf("cur cnt:%d\n", get_elements_count(pending_devices));
+    //check_queue(pending_devices, 0);
+    lock_queue(pending_devices);
+    diae_queue_block * curblock = pending_devices->start_block;
+    if(pending_devices->start_block !=NULL && pending_devices->end_block == NULL)
+    {
+        printf("queue damages in pending devices...\n");
+    }
+    while(curblock!=NULL)
+    {
+        diaedevice * curDev = (diaedevice *)curblock->data;
+        if(curDev == NULL)
+        {
+            unlock_queue(pending_devices);
+            delete_from_queue(pending_devices, curblock);
+            return 1;
+        }
+        if(curDev->attempts<=0)
+        {
+            unlock_queue(pending_devices);
+            printf("too many attempts... device %s is going to be ignored for a while\n", curDev->port_name);
+            delete_from_queue(pending_devices, curblock);
+            close_device(curDev);
+
+
+            return 1;
+        }
+
+        write_to_port(curDev, "g", (size_t)1);
+        int res = read_port_byte(curDev);
+
+        int channel = curDev->buf[0]-'1';//'1' is the first channel allowed
+        if(res<=0)
+        {
+            printf("err: device %s is not answering\n", curDev->port_name);
+            curDev->attempts--;
+            curblock = curblock->next;
+            continue;
+        }
+        if(channel<MAX_CHANNELS_SUPPORTED && channel>=0)
+        {
+            printf("device %s channel is %i\n", curDev->port_name, channel+1);
+            if(devices[channel]!=NULL)
+            {
+                diaedevice *aux = devices[channel];
+                devices[channel] = curDev;
+                close_device(aux);
+            }
+            else
+            {
+                devices[channel] = curDev;
+            }
+            curDev->attempts = 5;
+            unlock_queue(pending_devices);
+            delete_from_queue(pending_devices, curblock);
+            return 1;
+        }
+
+
+        //if(channel<MAX_CHANNELS_SUPPORTED && channel>=0)
+        //{
+        //    if(devices[channel]!=NULL)
+        //    {
+        //        close_device(devices[channel]);
+        //        devices[channel]=NULL;
+        //    }
+        //    devices[channel] = dev;
+        //}
+        curblock = curblock->next;
+    }
+    unlock_queue(pending_devices);
+    return 0;
+}
+
+void * process_pending_queue_loop()
+{
+    while(1)
+    {
+
+        int res = process_pending_queue();
+        if(res)
+        {
+            sleep(5);
+        }
+        sleep(1);
+    }
+}
+//check connected devices
+int check_connected_devices()
+{
+    printf("\n\nch_dev_con;\n\n\n");
+    memset(device_checked, 0, sizeof(device_checked));//not checked at the start
+    //let's read devices available
 	struct dirent *entry;
-	if((dir = opendir("/sys/class/tty"))!=NULL)
+	DIR * dir;
+	if((dir = opendir("/dev"))!=NULL)
 	{
 		while((entry = readdir(dir))!=NULL)
 		{
-			printf("%s\n", entry->d_name);
+		    if(strstr(entry->d_name,"ttyUSB"))
+            {
+                printf("dev:%s",entry->d_name);
+                char already_in_the_list = 0;
+                for(int i=0;i<MAX_CHANNELS_SUPPORTED;i++)
+                {
+                    if(devices[i]!=NULL)
+                    {
+                        if(!strcmp(entry->d_name,devices[i]->port_name))
+                        {
+                            printf(" already in the list: %d\n", i);
+                            device_checked[i] = 1;
+                            already_in_the_list = 1;
+                        }
+                    }
+                }
+                printf("\n");
+
+                if(!is_diae_queue_empty(pending_devices))
+                {
+                    lock_queue(pending_devices);
+                    printf("\nloop through queue...\n");
+                    diae_queue_block * curblock = pending_devices->start_block;
+                    while(curblock!=NULL)
+                    {
+                        printf("block:");
+                        diaedevice * curDev = (diaedevice *)curblock->data;
+                        printf("port %s\n",curDev->port_name);
+                        if(strcmp(curDev->port_name, entry->d_name)==0) //means equal
+                        {
+                            printf("%s is already in the queue \n", entry->d_name);
+                            already_in_the_list = 1;
+                            break;
+                        }
+                        curblock = curblock->next;
+                    }
+                    unlock_queue(pending_devices);
+                }
+
+                if(!already_in_the_list)
+                {
+                    diaedevice * dev = create_device(entry->d_name);
+                    if(!open_port(dev))//no errors
+                    {
+                        enqueue(pending_devices, dev);
+
+                        printf("dev %s is properly added to the queue\n", dev->connection_string);
+                    }
+                }
+            }
 		}
+///////////////////
+        for(int i=0;i<MAX_CHANNELS_SUPPORTED;i++)
+        {
+            if(devices[i]!=NULL&&!device_checked[i])
+            {
+                diaedevice * dev_to_del = devices[i];
+                devices[i] = NULL;
+                printf("dev %s on channel %d is not in the list of available devices and will be destroyed\n", dev_to_del->port_name, i+1);
+                close_device(dev_to_del);
+            }
+        }
+////////////////
+
 		closedir(dir);
 	}
 	else
 	{
+	    printf("ERR!!: CANT read available ports\n");
 		perror("CAN NOT READ PORTS AVAILABLE");
 		return 1;
 	}
+	return 0;
+}
+
+
+void * check_connected_devices_loop()
+{
+    while(1)
+    {
+        check_connected_devices();
+        sleep(5);
+    }
+    return NULL;
+}
+
+int main(int argc, char **argv)
+{
+    pending_devices = create_queue("devices");
+    pending_commands = create_queue("commands");
+
+    //CHECK CONNECTED DEVICES
+    int err = pthread_create(&physical_ports_thread, NULL, &check_connected_devices_loop, NULL);
+
+    if (err != 0)
+    {
+        printf("\ncan't create thread :[%s]", strerror(err));
+    }
+
+    //CHECK PENDING DEVICES QUEUE
+    err = pthread_create(&check_pendingdevice_queue_thread, NULL, &process_pending_queue_loop, NULL);
+    if (err != 0)
+    {
+        printf("\ncan't create queue processing thread :[%s]", strerror(err));
+    }
+
+    //SEND COMANDS QUEUE
+    err = pthread_create(&process_command_queue_loop_thread, NULL, &process_command_queue_loop, NULL);
+    if (err != 0)
+    {
+        printf("\ncan't create command processing thread :[%s]", strerror(err));
+    }
+
+    for(int i=0;i<MAX_CHANNELS_SUPPORTED;i++)
+    {
+        devices[i]=NULL;
+    }
+
 
 	struct event_base *base;
 
@@ -201,9 +501,8 @@ int main(int argc, char **argv)
     event_set(&timer_event, -1, EV_TIMEOUT , timer_function, &timer_event);
     event_add(&timer_event, &stTv);
     ////////////TIMER END/////////////////////////////////////
-    printf("dispatching...");
+    printf("dispatching...\n\n");
     event_base_dispatch(base);
 
 	return 0;
 }
-
