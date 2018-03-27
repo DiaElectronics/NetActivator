@@ -261,15 +261,7 @@ int process_pending_queue()
         //we must get answer like: c1\n
         int res = read_port_byte(curDev);
 
-        if(curDev->buf[0]!='c')
-        {
-            printf("err: device %s has not returned 'c' channel prefix\n", curDev->port_name);
-            curDev->attempts--;
-            curblock = curblock->next;
-            continue;
-        }
-
-        int channel = curDev->buf[1]-'1';//'1' is the first channel allowed
+        int channel = curDev->buf[0]-'1';//'1' is the first channel allowed
         if(res<=0)
         {
             printf("err: device %s is not answering\n", curDev->port_name);
