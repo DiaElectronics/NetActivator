@@ -221,7 +221,10 @@ void * process_command_queue_loop()
         //printf( " |\n");
         //printf( "/ \\\n");
         int K = process_command_queue();
-        sleep(K);
+        if(K=DIAE_WAIT)
+        {
+            usleep(100000);
+        }
     }
     return NULL;
 }
