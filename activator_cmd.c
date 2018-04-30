@@ -36,13 +36,17 @@ int parse_cmd(activator_cmd * cmd, char * buf, size_t buf_len)
     {
         return DIAE_PARAM_IS_NULL;
     }
-    memset(cmd, 0 , sizeof(activator_cmd))
+    if(buf==NULL)
+    {
+        return DIAE_PARAM_IS_NULL;
+    }
+    memset(cmd, 0 , sizeof(activator_cmd));
 
 
     //Let's parse
 
     //1st command type
-    cmd->cmd_type=get_cmd_type();
+    cmd->cmd_type=get_cmd_type(buf[0]);
     if(cmd->cmd_type<0)
     {
         printf("can't parse command(wrong type)_:\n%s\n",buf);
@@ -76,7 +80,7 @@ int parse_cmd(activator_cmd * cmd, char * buf, size_t buf_len)
     }
     else if (cmd->channel > MAX_CHANNELS_SUPPORTED)
     {
-        pcmd->channel = MAX_CHANNELS_SUPPORTED-1;
+        cmd->channel = MAX_CHANNELS_SUPPORTED-1;
         printf("can't parse command (channel)_:\n%s\n",buf);
         return DIAE_COMMAND_WRONG_FORMAT;
     }

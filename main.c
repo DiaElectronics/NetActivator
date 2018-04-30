@@ -48,6 +48,9 @@ pthread_t process_command_queue_loop_thread;
 diae_queue *pending_devices;
 diae_queue *pending_commands;
 
+void UpdateSubscriberIfNull(activator_cmd * cmd);
+void UpdateSubscriber(activator_cmd * cmd);
+
 int check_socket(int socket_fd)
 {
     int error_code;
@@ -92,7 +95,7 @@ void timer_function(int x, short int y, void *pargs)
     event_add((struct event*)pargs,&stTv);
 }
 
-#define MAX_HEADER=100;
+#define MAX_HEADER 100
 int process_command_queue()
 {
     char answerbuf[MAX_CMD+MAX_HEADER];
@@ -113,7 +116,7 @@ int process_command_queue()
     //printf("sending_cmd_to_box to %d, total bytes:%zu\n",curCmd->channel,strlen(curCmd->data));
     const char * buf = "-";
 
-    UpdateSubscriberIfNull(cmd);
+    UpdateSubscriberIfNull(curCmd);
 
     if(curCmd->cmd_type == CMD_TYPE_ACTIVATE)
     {
@@ -146,11 +149,13 @@ int process_command_queue()
         }
         else
         {
-            strcpy(answerbuf,"P+-:");
+            strcpy(answerbuf,"P-:");
         }
-        sprintf(&answerbuf[strlen(answerbuf)], "%d;", cmd_served);
+        sprintf(&answerbuf[strlen(answerbuf)], "%ld;", cmd_served);
 
-        snprintf(&last_statuses[CMD_MAX*curCmd->channel], CMD_MAX-1, "%s", curCmd->data);
+        snprintf(&last_statuses[MAX_CMD*curCmd->channel], MAX_CMD, "%s", curCmd->data);
+
+        last_statuses[MAX_CMD*curCmd->channel+511]=0;
 
         int n = sendto(udpsocket_descriptor, answerbuf, strlen(answerbuf), 0, &curCmd->pack_from_addr, curCmd->addr_len);
         if (n < 0)
@@ -163,7 +168,7 @@ int process_command_queue()
      {
         strcpy(answerbuf,"S:");
 
-        snprintf(&answerbuf[strlen(answerbuf)], MAX_CMD - 1, "%s", last_statuses[MAX_CMD * curCmd->channel] );
+        snprintf(&answerbuf[strlen(answerbuf)], MAX_CMD - 1, "%s", &last_statuses[MAX_CMD * curCmd->channel] );
          int n = sendto(udpsocket_descriptor, answerbuf, strlen(answerbuf), 0, &curCmd->pack_from_addr, curCmd->addr_len);
          if (n < 0)
          {
@@ -173,7 +178,7 @@ int process_command_queue()
      }
      else if (curCmd->cmd_type == CMD_TYPE_TRANSFER)
      {
-         lastCmd = subscribers[curCmd->channel];
+         activator_cmd * lastCmd = subscribers[curCmd->channel];
          if(lastCmd!=NULL)
          {
              strcpy(answerbuf, "T+");
@@ -461,7 +466,7 @@ void UpdateSubscriberIfNull(activator_cmd * cmd)
             if(subscribers[cmd->channel]==NULL)
             {
                 subscribers[cmd->channel] = malloc(sizeof(activator_cmd));
-                memccpy(subscribers[cmd->channel], cmd, sizeof(activator_cmd));
+                memcpy(subscribers[cmd->channel], cmd, sizeof(activator_cmd));
             }
         }
         pthread_mutex_unlock(&subscribers_lock);
@@ -480,7 +485,7 @@ void UpdateSubscriber(activator_cmd * cmd)
                 subscribers[cmd->channel] = NULL;
             }
             subscribers[cmd->channel] = malloc(sizeof(activator_cmd));
-            memccpy(subscribers[cmd->channel], cmd, sizeof(activator_cmd));
+            memcpy(subscribers[cmd->channel], cmd, sizeof(activator_cmd));
         }
         pthread_mutex_unlock(&subscribers_lock);
     }
@@ -509,6 +514,7 @@ int main(int argc, char **argv)
 
     //SEND COMANDS QUEUE
     err = pthread_create(&process_command_queue_loop_thread, NULL, &process_command_queue_loop, NULL);
+
     if (err != 0)
     {
         printf("\ncan't create command processing thread :[%s]", strerror(err));

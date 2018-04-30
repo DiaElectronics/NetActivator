@@ -11,6 +11,7 @@ diae_queue * create_queue(char * newName)
     result->end_block = NULL;
     result->start_block = NULL;
     result->name = newName;
+    pthread_mutex_init(&result->lock, NULL);
     return result;
 }
 
