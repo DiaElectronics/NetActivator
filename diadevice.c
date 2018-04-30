@@ -87,13 +87,11 @@ int open_port(diaedevice * currentDevice)
     currentDevice->handler=fd;
     currentDevice->isOpened=1;
 
-
     return 0;
 }
 
 int write_to_port(diaedevice * currentDevice, char * buf, size_t len)
 {
-
     if(currentDevice == NULL||currentDevice->connection_string==NULL)
     {
         perror("NULL device or port name passed\n");

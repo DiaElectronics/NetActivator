@@ -68,7 +68,7 @@ void timer_function(int x, short int y, void *pargs)
     {
         if(devices[i]!=NULL)
         {
-            printf("%s is on %d channel, \n", devices[i]->port_name, i+1);
+            printf("%s is on %d channel, \n", devices[i]->port_name, i);
             write_to_port(devices[i], "$", 1);
 
             int N = read_port_byte(devices[i]);
@@ -303,7 +303,7 @@ int process_pending_queue()
         //we must get answer like: c1\n
         int res = read_port_byte(curDev);
 
-        int channel = curDev->buf[0]-'1';//'1' is the first channel allowed
+        int channel = curDev->buf[0]-'0';//'0' is the first channel allowed
         if(res<=0)
         {
             printf("err: device %s is not answering\n", curDev->port_name);
