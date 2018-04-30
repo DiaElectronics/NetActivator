@@ -17,18 +17,29 @@
 
 #include "diaequeue.h"
 #include "diaedevice.h"
+#include "errors.h"
+#include "activator_cmd.h"
 
+#define DIAE_NO_WAIT 0
+#define DIAE_WAIT 1
+#define DIAE_WAIT_MS 100
 
 #define UDP_PORT 6001
-#define MAX_CMD 512
-#define MAX_CHANNELS_SUPPORTED 12
+
 
 int udpsocket_descriptor = 0;
 int g_count = 0;
+long int cmd_served = 0;
+
+pthread_mutex_t subscribers_lock;
 struct timeval stTv;
 
 diaedevice * devices[MAX_CHANNELS_SUPPORTED];
 char device_checked [MAX_CHANNELS_SUPPORTED];
+
+char last_statuses[MAX_CHANNELS_SUPPORTED*MAX_CMD];
+
+activator_cmd * subscribers[MAX_CHANNELS_SUPPORTED];
 
 pthread_t physical_ports_thread;
 pthread_t check_pendingdevice_queue_thread;
@@ -36,59 +47,6 @@ pthread_t process_command_queue_loop_thread;
 
 diae_queue *pending_devices;
 diae_queue *pending_commands;
-
-typedef struct activator_cmd
-{
-    int channel;
-    unsigned int addr_len;
-    struct sockaddr pack_from_addr;
-    char data[MAX_CMD];
-} activator_cmd;
-
-int parse_cmd(activator_cmd * cmd, char * buf, size_t buf_len)
-{
-    cmd->channel=0;
-    memset(cmd->data, 0, MAX_CMD );
-    int cmd_bytes_written = 0;
-    for(int i=0;i<buf_len;i++)
-    {
-        if(buf[i]>='1' && buf[i]<='9')
-        {
-            cmd->channel*=10;
-            cmd->channel+=buf[i];
-            cmd->channel-='1';//'1' is the first possible channel
-        }
-        else if(buf[i]==':')
-        {
-            for(int j=i+1;(j<(buf_len-1))&&(cmd_bytes_written<(MAX_CMD-1));j++)
-            {
-                cmd->data[cmd_bytes_written] = buf[j];
-                if(buf[j]==';')
-                {
-                    cmd->data[cmd_bytes_written+1]=0;
-                    return 0;
-                }
-                if(buf[j]==0)
-                {
-                     printf("zero terminated command (instead of ;)\n");
-                    return 1;
-                }
-                cmd_bytes_written++;
-            }
-            printf("not terminated command\n");
-            return 1;
-        }
-        else
-        {
-            printf("can't parse command:\n%s\n",buf);
-            return 1;
-        }
-    }
-
-    printf("can't parse command_:\n%s\n",buf);
-    return 1;
-}
-
 
 int check_socket(int socket_fd)
 {
@@ -134,40 +92,120 @@ void timer_function(int x, short int y, void *pargs)
     event_add((struct event*)pargs,&stTv);
 }
 
-
+#define MAX_HEADER=100;
 int process_command_queue()
 {
+    char answerbuf[MAX_CMD+MAX_HEADER];
+    memset(answerbuf, 0, sizeof(answerbuf));
     if(is_diae_queue_empty(pending_commands))
     {
         //printf("cmd queue empty\n");
-        return 1;
+        return DIAE_QUEUE_WAIT;
     }
     activator_cmd * curCmd = (activator_cmd *)dequeue(pending_commands);
+
+    cmd_served++;
     if(curCmd == NULL)
     {
         printf("empty command in line \n ");
-        return 0;
+        return DIAE_QUEUE_NOWAIT;
     }
-    printf("sending_cmd_to_box to %d, total bytes:%zu\n",curCmd->channel,strlen(curCmd->data));
+    //printf("sending_cmd_to_box to %d, total bytes:%zu\n",curCmd->channel,strlen(curCmd->data));
     const char * buf = "-";
 
-    if(devices[curCmd->channel]!=NULL)
-    {
-        buf="+";
-        write_to_port(devices[curCmd->channel], curCmd->data, strlen(curCmd->data));
-    }
-    else
-    {
-        printf("device is not found :(\n");
-    }
+    UpdateSubscriberIfNull(cmd);
 
-    int n = sendto(udpsocket_descriptor, buf, strlen(buf), 0, &curCmd->pack_from_addr, curCmd->addr_len);
-    if (n < 0)
+    if(curCmd->cmd_type == CMD_TYPE_ACTIVATE)
     {
-        printf("ERROR in sendto\n");
+        printf("sending_cmd_to_box to %d, type=%d, data='%s' total bytes:%zu\n",curCmd->channel, curCmd->cmd_type,  curCmd->data, strlen(curCmd->data));
+        if(devices[curCmd->channel]!=NULL)
+        {
+            buf="+";
+            write_to_port(devices[curCmd->channel], curCmd->data, strlen(curCmd->data));
+        }
+        else
+        {
+            printf("device is not found :(\n");
+        }
+        int n = sendto(udpsocket_descriptor, buf, strlen(buf), 0, &curCmd->pack_from_addr, curCmd->addr_len);
+        if (n < 0)
+        {
+            printf("ERROR in sendto\n");
+        }
     }
+    else if (curCmd->cmd_type == CMD_TYPE_PING || curCmd->cmd_type == CMD_TYPE_SUBSCRIBE)
+    {
+        if(curCmd->cmd_type == CMD_TYPE_SUBSCRIBE)
+        {
+            UpdateSubscriber(curCmd);
+        }
+
+        if(devices[curCmd->channel]!=NULL)
+        {
+            strcpy(answerbuf,"P+:");
+        }
+        else
+        {
+            strcpy(answerbuf,"P+-:");
+        }
+        sprintf(&answerbuf[strlen(answerbuf)], "%d;", cmd_served);
+
+        snprintf(&last_statuses[CMD_MAX*curCmd->channel], CMD_MAX-1, "%s", curCmd->data);
+
+        int n = sendto(udpsocket_descriptor, answerbuf, strlen(answerbuf), 0, &curCmd->pack_from_addr, curCmd->addr_len);
+        if (n < 0)
+        {
+            printf("ERROR in sendto\n");
+        }
+        printf("sending_cmd_to_box to %d, type=%d, answer='%s' total bytes:%zu\n",curCmd->channel, curCmd->cmd_type,  answerbuf, strlen(curCmd->data));
+     }
+     else if (curCmd->cmd_type == CMD_TYPE_GETSTATUS)
+     {
+        strcpy(answerbuf,"S:");
+
+        snprintf(&answerbuf[strlen(answerbuf)], MAX_CMD - 1, "%s", last_statuses[MAX_CMD * curCmd->channel] );
+         int n = sendto(udpsocket_descriptor, answerbuf, strlen(answerbuf), 0, &curCmd->pack_from_addr, curCmd->addr_len);
+         if (n < 0)
+         {
+            printf("ERROR in sendto orig token\n");
+         }
+        //answerbur[strlen(answerbuf)]
+     }
+     else if (curCmd->cmd_type == CMD_TYPE_TRANSFER)
+     {
+         lastCmd = subscribers[curCmd->channel];
+         if(lastCmd!=NULL)
+         {
+             strcpy(answerbuf, "T+");
+         }
+         else
+         {
+             strcpy(answerbuf, "T-");
+         }
+         int n = sendto(udpsocket_descriptor, answerbuf, strlen(answerbuf), 0, &curCmd->pack_from_addr, curCmd->addr_len);
+         if (n < 0)
+         {
+            printf("ERROR in sendto orig token\n");
+         }
+
+         n = sendto(udpsocket_descriptor, &curCmd->data, strlen(curCmd->data), 0, &lastCmd->pack_from_addr, lastCmd->addr_len);
+         if (n < 0)
+         {
+            printf("ERROR in sendto transfered device\n");
+         }
+     }
+     else
+     {
+        int n = sendto(udpsocket_descriptor, buf, strlen(buf), 0, &curCmd->pack_from_addr, curCmd->addr_len);
+        if (n < 0)
+        {
+            printf("ERROR in sendto\n");
+        }
+     }
+
+
     free(curCmd);
-    return 0;
+    return DIAE_QUEUE_NOWAIT;
 }
 
 void * process_command_queue_loop()
@@ -195,7 +233,7 @@ void command_recieved_handler(int x, short int y, void *pargs)
 
     if ((nByte = recvfrom(x, aReqBuffer, sizeof(aReqBuffer), 0,&pack_from_addr, &unFromAddrLen)) == -1)
     {
-        printf("error occured while receiving\n");
+        printf("error occurred while receiving\n");
     }
     aReqBuffer[nByte] = 0;
 
@@ -209,7 +247,6 @@ void command_recieved_handler(int x, short int y, void *pargs)
         printf("channel:%d; cmd:%s\n",curCmd->channel,curCmd->data);
         curCmd->addr_len = unFromAddrLen;
         memcpy(&curCmd->pack_from_addr, &pack_from_addr, unFromAddrLen );
-
         enqueue(pending_commands, curCmd);
     }
     else
@@ -422,9 +459,44 @@ void * check_connected_devices_loop()
     }
     return NULL;
 }
+void UpdateSubscriberIfNull(activator_cmd * cmd)
+{
+    if(cmd!=NULL)
+    {
+        pthread_mutex_lock(&subscribers_lock);
+        if(cmd->channel>=0 && cmd->channel<=MAX_CHANNELS_SUPPORTED)
+        {
+            if(subscribers[cmd->channel]==NULL)
+            {
+                subscribers[cmd->channel] = malloc(sizeof(activator_cmd));
+                memccpy(subscribers[cmd->channel], cmd, sizeof(activator_cmd));
+            }
+        }
+        pthread_mutex_unlock(&subscribers_lock);
+    }
+}
+void UpdateSubscriber(activator_cmd * cmd)
+{
+    if(cmd!=NULL)
+    {
+        pthread_mutex_lock(&subscribers_lock);
+        if(cmd->channel>=0 && cmd->channel<=MAX_CHANNELS_SUPPORTED)
+        {
+            if(subscribers[cmd->channel]!=NULL)
+            {
+                free(subscribers[cmd->channel]);
+                subscribers[cmd->channel] = NULL;
+            }
+            subscribers[cmd->channel] = malloc(sizeof(activator_cmd));
+            memccpy(subscribers[cmd->channel], cmd, sizeof(activator_cmd));
+        }
+        pthread_mutex_unlock(&subscribers_lock);
+    }
+}
 
 int main(int argc, char **argv)
 {
+    memset(last_statuses,0, sizeof(last_statuses));
     pending_devices = create_queue("devices");
     pending_commands = create_queue("commands");
 
@@ -453,6 +525,7 @@ int main(int argc, char **argv)
     for(int i=0;i<MAX_CHANNELS_SUPPORTED;i++)
     {
         devices[i]=NULL;
+        subscribers[i]=NULL;
     }
 
 

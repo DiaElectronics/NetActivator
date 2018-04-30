@@ -1,6 +1,10 @@
 #ifndef DIAEQUEUE_H
 #define DIAEQUEUE_H
 
+
+#define DIAE_QUEUE_WAIT 1
+#define DIAE_QUEUE_NOWAIT 0
+
 #include <pthread.h>
 
 typedef struct diae_queue_block
