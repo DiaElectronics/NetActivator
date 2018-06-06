@@ -374,7 +374,7 @@ int check_connected_devices()
 	{
 		while((entry = readdir(dir))!=NULL)
 		{
-		    if(strstr(entry->d_name,"ttyUSB"))
+		    if(strstr(entry->d_name,"ttyUSB")||strstr(entry->d_name,"ttyACM"))
             {
                 printf("dev:%s",entry->d_name);
                 char already_in_the_list = 0;
