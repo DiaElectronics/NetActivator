@@ -11,16 +11,32 @@ Last action:
 <?php
 if($_POST["actid"]) {
 	$sock = socket_create(AF_INET, SOCK_DGRAM, SOL_UDP);
-	$msg = "1:+8/900000;";
+	$msg = "1:+8/1200000;";
 	if($_POST["actid"]=="water") {
 		echo "water engaged";
-		$msg = "1:+1/60000|+8/60000|+7/60000|-2|-3|-4|-5|-6;";
+		$msg = "1:+1/120000|+8/120000|+7/120000|-2|-3|-4|-5|-6;";
 	} elseif($_POST["actid"]=="light")
 	{
+		$msg = "1:+8/3000000;";
 		echo "light engaged";
-	} else 
+	} elseif($_POST["actid"]=="soap")
 	{
-		echo "ASK ANDREY";
+		$msg = "1:+1/120000|+8/120000|+7/120000|+3/120000/135/350|-2|-4|-5|-6";
+		echo "Soap engaged";
+	}
+	elseif($_POST["actid"]=="soappremium")
+	{
+		$msg = "1:+1/120000|+8/120000|+7/120000|+3/120000/250/250|-2|-4|-5|-6";
+		echo "Soap Premium engaged";
+	} elseif($_POST["actid"]=="wax")
+	{
+		$msg = "1:+1/118000|+8/118000|+7/118000|+5/118000/75/425|-2|-3|-4|-6;";
+		echo "Wax engaged";
+	}
+	elseif($_POST["actid"]=="stop")
+	{
+		$msg = "1:-1|-2|-3|-4|-5|-6|-7|-8;";
+		echo "STOP";
 	}
 
 	$len = strlen($msg);
@@ -35,31 +51,31 @@ if($_POST["actid"]) {
 <p>
 <form action="" method="POST">
 <input type="hidden" id="actid" name="actid" value="water" />
-<input type="submit" value="WATER(60 sec)"></input>
+<input type="submit" value="WATER(120 sec)"></input>
 </form>
 </p>
 <p>
 <form action="" method="POST">
 <input type="hidden" id="actid" name="actid" value="soap" />
-<input type="submit" value="SOAP"></input>
+<input type="submit" value="SOAP (120 sec)"></input>
 </form>
 </p>
 <p>
 <form action="" method="POST">
 <input type="hidden" id="actid" name="actid" value="soappremium" />
-<input type="submit" value="SOAP(PREMIUM)"></input>
+<input type="submit" value="SOAP(PREMIUM)(120 sec)"></input>
 </form>
 </p>
 <p>
 <form action="" method="POST">
 <input type="hidden" id="actid" name="actid" value="wax" />
-<input type="submit" value="WAX"></input>
+<input type="submit" value="WAX(118 sec)"></input>
 </form>
 </p>
 <p>
 <form action="" method="POST">
 <input type="hidden" id="actid" name="actid" value="light" />
-<input type="submit" value="LIGHT(90 sec)"></input>
+<input type="submit" value="LIGHT(300 sec)"></input>
 </form>
 </p>
 <p>
